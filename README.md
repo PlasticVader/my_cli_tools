@@ -6,8 +6,6 @@
 1. hexme
 1. pns
 
-_**Their brief description**_
-
 #### [ dtr ]
 A pretty large bash script, run with no arguments supplied -h|--help to see the options
 
