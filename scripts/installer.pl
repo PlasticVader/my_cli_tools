@@ -10,7 +10,7 @@ use FindBin qw{ $Bin $Script };
 my $buff;
 my $term        = 0;
 my $usr1        = 0;
-my $selfunlink  = ($ENV{USER} =~ /^plast/) ? 0 : 1;
+my $selfunlink  = (-d qq{$Bin/../.git}) ? 0 : 1;
 my $base        = q{https://raw.githubusercontent.com/PlasticVader/my_cli_tools/master/scripts};
 my $bin         = qq{$ENV{HOME}/bin};
 my $bashrc      = qq{$ENV{HOME}/.bashrc};
