@@ -914,8 +914,8 @@ function dtr_update() {
         do
             if [[ $Confirm =~ [Yy][Ee]?[Ss]? ]]
             then
-                _dtr_update "${param[tempfile]}"
-                break
+                _dtr_update "${param[tempfile]}" & disown
+                return
             elif [[ $Confirm =~ [Nn][Oo]? ]]
             then
                 printf "${form[left]}" "${VERSION}"
