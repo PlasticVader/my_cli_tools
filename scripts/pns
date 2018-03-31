@@ -1,0 +1,216 @@
+#!/usr/bin/env bash
+
+typeset -A GLOBAL
+typeset -A RESULT
+
+GLOBAL['this']="$( basename ${0} )"
+GLOBAL['prefix']="${1}"; shift
+GLOBAL['args']="${@}"
+
+typeset -A REGEX=(
+	['prefix_ERE']='^([a-zA-Z]{1,8})([0-9]+)([.-])?([0-9]+)?$'
+	['flag_help']='^[-]*(h(elp)?|wtf)$'
+	['whois_ns_PCRE']='^(?i)name\s*server:\s\K.+'
+	['whois_ip_PCRE']='\d{1,3}[.]\d{1,3}[.]\d{1,3}[.]\d{1,3}'
+	['domain_ERE']='^(htt?ps?://)?'
+	['domain_ERE']+='([[:alnum:]_-]{1,63}[.][[:alnum:]_-]{1,63}'
+	['domain_ERE']+='([.][[:alpha:]-]{2,16}|[.][[:alpha:]]{2,3}[.][[:alpha:]]{2,3})?)'
+	['domain_ERE']+='(/.*)?$'
+	['callback_ERE']='^[[:alpha:]_]{3,30}$'
+)
+
+typeset -A CANNED=(
+	['usage']="\n  Usage: ${GLOBAL['this']} ns1-2 domain(s).tld\n"
+	['usage']+="    [ ns1-2 / ns4 ]   => nameserver prefix with or without the range of nameservers\n"
+	['usage']+="    [ domain(s).tld ] => domains that will be added to the prefix\n\n"
+
+	['invalid_prefix']="\nThis is not a valid nameserver prefix/subdomain: "
+	['invalid_prefix']+="[> %s <]\nCare to double-check?\n"
+	['help_output']="\n  \"${GLOBAL['this']}\" helps saving time checking nameserver configuration with dig\n"
+	['help_output']+="  Feel free to throw URL addresses when copying the domain name in Kayako just\n  to get triggered"
+	['help_output']+=" because of its delay caused\n  before actually putting stuff into the buffer xD\n"
+	['help_output']+="\n  --------------Usage example--------------\n${CANNED['usage']}"
+	['no_valid_domains']="\nThere are no valid domains passed as arguments: "
+	['no_valid_domains']+="[> %s <]\nCare to double-check?\n"
+
+	['info_glue']='  Checking GLUE record for [ %s ]'
+	['info_zone']='  Checking Zone A record for [ %s ] at [ %s ]'
+
+	['result_status']='INCORRECT'
+	['result_false_cond']='Error:'
+	['result_msg']='  The nameserver config for [ %s ] is [> %s <] because:\n'
+	['result_msg']+='  %s\n'
+	['result_start_msg']='\n----------------------------[ Results for %s ]--------------'
+	['result_start_msg']+='--------------\n\n'
+	['slash_line']='\n//////////////////////////////////////////////////////////////////////////////////'
+	['slash_line']+='//////////\n\n'
+)
+
+###############################################################################
+function usage () {
+	printf "${CANNED['usage']}"
+}
+
+function callback () {
+	eval "${1}"
+}
+
+function die () {
+	local _format _arguments _callback
+
+	_format="${1}"
+	_arguments="${2:-}"
+	_callback="${3:-}"
+
+	printf "${_format}" "${_arguments}"
+
+	[[ ${_callback} =~ ${REGEX['callback_ERE']} ]] && {
+		callback "${_callback}"
+	}
+
+	exit "${4:-0}"
+}
+###############################################################################
+
+################################################################################
+function VALIDATE_INIT () {
+
+	[[ ${GLOBAL['prefix']} =~ ${REGEX['prefix_ERE']} ]] && {
+	
+		GLOBAL['prefix']="${BASH_REMATCH[1]}"
+
+		[[ ! -z ${BASH_REMATCH[3]} ]] && {
+			GLOBAL['prefix_range_min']="${BASH_REMATCH[2]}"
+			GLOBAL['prefix_range_max']="${BASH_REMATCH[4]}"
+		} || {
+			GLOBAL['prefix_range_min']="${BASH_REMATCH[2]}"
+			GLOBAL['prefix_range_max']="${GLOBAL['prefix_range_min']}"
+		}
+
+	}
+
+	[[ ${GLOBAL['prefix']} =~ ${REGEX['flag_help']} ]] && {
+		die "${CANNED['help_output']}"
+	}
+
+	for each in ${GLOBAL['args']}
+	do
+		[[ ${each} =~ ${REGEX['domain_ERE']} ]] && {
+			GLOBAL['domains']+=" ${BASH_REMATCH[2]}"
+		}
+	done
+	unset each
+
+	[[ -z ${GLOBAL['domains']} ]] && {
+		die "${CANNED['no_valid_domains']}" "${GLOBAL['domains']:-Null}" "usage"
+	}
+}
+################################################################################
+
+VALIDATE_INIT
+
+##########################################################################################
+function has () {
+	local option="${1}"; shift
+	local nameserver glue_ip result _format
+
+	nameserver="${1}"; shift
+
+	case ${option} in
+		glue)
+			result="$( whois ${nameserver} | grep -Po "${REGEX['whois_ip_PCRE']}" )"
+			[[ -z ${result} ]] && {
+				 _format="Error: No GLUE record in whois database for $nameserver"
+			} || _format='GLUE is present: %s'
+		;;
+		zone)
+			glue_ip="${1}"		
+			result="$( dig +short @${glue_ip} -q ${nameserver} -t A 2>/dev/null )"
+			[[ -z ${result} ]] && {
+				 _format="Error: No A record in the zone file for $nameserver"
+			} || _format='A record is present: %s'
+		;;
+	esac
+
+	printf "${_format}" "${result:-}"
+}
+
+function add_to_results () {
+	local domain result
+
+	domain="${1}"
+	result="    ${2}"
+
+	RESULT["${domain}"]="${result}"
+}
+
+function print_results () {
+	local _format _status _reason _nsconfig
+
+	_format="${CANNED['result_msg']}"
+
+	printf "${CANNED['slash_line']}"
+
+	for domain in ${!RESULT[@]}
+	do
+		_reason="${RESULT[$domain]}"
+
+		_nsconfig="${GLOBAL['prefix']}"
+		_nsconfig+="${GLOBAL['prefix_range_min']}-"
+		_nsconfig+="${GLOBAL['prefix_range_max']}."
+		_nsconfig+="${domain}"
+
+		[[ ! ${_reason} =~ ${CANNED['false_cond']} ]] && {
+			 _status="${CANNED['result_status']#IN}"
+		} || _status="${CANNED['result_status']}"
+		
+		printf "${CANNED['result_start_msg']}" "${domain}"
+
+		printf "${_format}" "${_nsconfig}" "${_status}" "${_reason}"
+	done
+
+	printf "${CANNED['slash_line']}"
+}
+
+function check_private_nameserver_config () {
+	local -A vars=(
+		['domain']="${1}"
+		['min']="${GLOBAL['prefix_range_min']}"
+		['max']="${GLOBAL['prefix_range_max']}"
+	)
+
+	for (( i=${vars['min']}; i<=${vars['max']}; i++ ))
+	do
+		vars['ns']="${GLOBAL['prefix']}${i}.${vars['domain']}"
+
+		printf "${CANNED['info_glue']}" "${vars['ns']}"
+
+		vars['glue']="$( has 'glue' "${vars['ns']}" )"
+		[[ ${vars['glue']} =~ ${CANNED['result_false_cond']} ]] && {
+			 vars['msg']=' => [ No GLUE ]\n'
+		} || vars['msg']=" => [ OK->${vars['glue']##*: } ]\n"
+
+		printf "${vars['msg']}"
+		add_to_results "${vars['domain']}" "${vars['glue']}"
+
+		[[ ${vars['msg']} =~ No ]] && continue
+
+		printf "${CANNED['info_zone']}" "${vars['glue']##*: }" "${vars['ns']}"
+
+		vars['zone']="$( has 'zone' "${vars['ns']}" "${vars['glue']##*: }" )"
+		[[ ${vars['zone']} =~ ${CANNED['result_false_cond']} ]] && {
+			 vars['msg']=' => [ No A record ]\n'
+		} || vars['msg']=" => [ OK->${vars['zone']} ]\n"
+
+		printf "${vars['msg']}"
+		add_to_results "${vars['domain']}" "${vars['zone']}"
+	done
+}
+
+for each in ${GLOBAL['domains']# }
+do
+	check_private_nameserver_config "${each}"
+done
+unset each
+
+print_results

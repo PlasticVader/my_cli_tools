@@ -1,0 +1,126 @@
+#!/usr/bin/env perl
+
+use strict;
+use warnings;
+use FindBin qw{ $Script };
+
+# A little dispatch table
+my %MODE = (
+     'encode' => sub {
+        my $data = shift;
+        my $hexed;
+
+        # Convert eeevery character to hexadecimal
+        for my $char (split //, $data) {
+             $hexed .= q{\\x} . unpack 'H*', $char;
+        }
+
+        return $hexed;
+     },
+
+    'decode' => sub {
+        my $unhexed = shift;
+        my ($char, $regex);
+        
+        $regex = qr{
+            (?<escaped_hex>
+                [\\][x]
+                        (?<hex>
+                            [[:alnum:]]{2}
+                        )
+            )
+        }x;
+
+        # Find the escaped hex, convert it to ASCII
+        # and then replace all match with the converted value
+        while ($unhexed =~ m{$regex}g) {
+            $char  = pack 'H*', $+{'hex'};
+            $unhexed =~ s{\Q$+{'escaped_hex'}\E}{$char};
+        }
+
+        return $unhexed;
+    },
+);
+
+# In case there is no idea what is going on
+sub print_usage {
+    print <<"EOT";
+    Usage: $Script <-[e|d]> <arguments>
+    Note: If the argument is a filename and it exists
+          then the script will do the action (-e|-d)
+          on the contents of the file
+    Examples:
+        1) $Script -e 'some string'
+        2) $Script -d '\\x68\\x65\\x6c\\x6c\\x6f'
+EOT
+    exit;
+}
+
+# Budget slurp, there is no guarantee that
+# File::Slurp or File::Slurper module will be in @INC
+sub read_file {
+    my $file = shift;
+    my $buff;
+
+    open my $fh, '<', $file or die "Could not open $file: $!";
+    {
+        local $/;
+        $buff = <$fh>;
+    }
+    close $fh or die "Could not close $file: $!";
+
+    return $buff;
+}
+
+# Make the output less confusing
+# when passing more than one argument to the script
+sub wrap_output {
+    my ($out, $length) = @_;
+    my ($wrapped, $hashtags, $termcols);
+
+    $termcols = `tput cols`;
+    chomp $termcols;
+
+    $length   = ($length) ? $length : $termcols;
+    $hashtags = q{#} x $length;
+    $wrapped  = "$hashtags\n$out\n$hashtags\n\n";
+
+    return $wrapped;
+}
+
+sub init {
+    my ($mode, @args) = @_;
+    my ($buff, $out);
+
+    for my $arg (@args) {
+        if (-f $arg) {
+            $buff = read_file($arg);
+            $out .= wrap_output( $MODE{$mode}->($buff) );
+        }
+        else {
+            $buff = $arg;
+            $out .= wrap_output( $MODE{$mode}->($buff) );
+        }
+    }
+
+    $out = ($out) ? $out : "Just void...\n";
+
+    # Remove the ugly newline in the end left by the wrapping subroutine
+    chomp $out;
+    print $out;
+}
+
+my $mode = shift @ARGV;
+if (not $mode or $mode =~ /[-]{1,2}h(?:elp)?/) {
+    print_usage;
+}
+
+if ($mode eq '-e') {
+    init('encode', @ARGV);
+}
+elsif ($mode eq '-d') {
+    init('decode', @ARGV);
+}
+else {
+    print_usage;
+}

@@ -1,0 +1,1017 @@
+#!/usr/bin/env bash
+
+OPTION="${1}"; shift
+VERSION='1.3.0'
+DIR="$( cd $( dirname "$0" ) && pwd )"
+SELF="$( basename $0 )"
+
+typeset -a ARGV
+typeset -a DOMAINS
+typeset -a _DOMAINS
+typeset -A COLOR
+typeset -A TOOLKIT
+typeset -A REGEX
+
+ARGV=( ${@} )
+COLOR=(
+  [RM]='\e[0m'
+  [R196]='\e[38;5;196m'
+  [O202]='\e[38;5;202m'
+  [O221]='\e[38;5;221m'
+  [Y228]='\e[38;5;228m'
+  [G119]='\e[38;5;119m'
+  [G35]='\e[38;5;35m'
+  [Y178]='\e[38;5;178m'
+  [B39]='\e[38;5;39m'
+  [C122]='\e[38;5;122m'
+  [C116]='\e[38;5;116m'
+)
+TOOLKIT=(
+    ['dir']="$HOME/.$SELF"
+    ['jar']="${TOOLKIT[dir]}/cookie.txt"
+    ['creds']="${TOOLKIT[dir]}/creds.txt"
+    ['url']='https://toolkit.namecheap.net'
+    ['timeout']="0"
+    ['details']="${TOOLKIT[details]:-0}"
+)
+REGEX=(
+    [shared_server]='(server|business|premium|host)([0-9]{1,3})'
+    [shared_server]+='([-][0-9]+)?([.](web-hosting|registrar-servers)[.]com)'
+    [domain]='^(https?://?)?((www[.]|[[:alnum:]_-]{1,63}[.])?[[:alnum:]_-]{1,63}[.]'
+    [domain]+='[[:alpha:]-]{2,16}([.][[:alpha:]]{2,3}([.][[:alpha:]]{2,3})?)?)([/].*)?$'
+)
+##########################################################################################
+function die() {
+    local form="${1}"; shift
+    local -a message=( ${@} )
+    printf "${form}" "${message[@]}"
+    exit 0
+}
+
+function dtr_print_usage() {
+    local -A form=(
+        [description]="  ${COLOR[O221]}%s${COLOR[RM]}  \n"
+        [disclaimer]="  ${COLOR[C116]}%s${COLOR[RM]}  \n"
+        [flags]="  ${COLOR[C116]}%s${COLOR[RM]}  \n"
+    )
+
+    local -a flags=(
+        '/////////////////////////////////////////////////////////////////////////////////////////////////////////////'
+        '|                        The script accepts the following options/flags:                                    |'
+        '|-----------------------------------------------------------------------------------------------------------|'
+        '|      [ -t|--trace|-d|-do|--doit|-z|--dns-zone|-l|--login-details|-h|--help|-v|--version|-u|--update ]     |'
+        '+-----------------------------------------------------------------------------------------------------------+'
+    )
+
+    local -a description=(
+        '+====================================+----------------------------------------------------------------------+'
+        '|    <[-t/--trace]> <domains.tld>    |       Perform DNS trace query in bulk and format the response        |'
+        '+====================================+----------------------------------------------------------------------+'
+        '+====================================+----------------------------------------------------------------------+'
+        '|   <[-d/-do/--doit]> <domains.tld>  |      Perform a search for the hosting server and login as wh         |'
+        '+====================================+----------------------------------------------------------------------+'
+        '+====================================+----------------------------------------------------------------------+'
+        '|   <[-l/--login-details|]>          |                    Reset Toolkit credentials                         |'
+        '+====================================+----------------------------------------------------------------------+'
+        '+--------------------+--------------------------------------------------------------------------------------+'
+        '|  <[-z|--dns-zone]> |  print raw DNS records for a domain on its hosting                                   |'
+        '+--------------------+--------------------------------------------------------------------------------------+'
+        '|    <[-h|--help]>   |  print this text and exit                                                            |'
+        '+--------------------+--------------------------------------------------------------------------------------+'
+        '|   <[-v|--version]> |  print the version and exit                                                          |'
+        '+--------------------+--------------------------------------------------------------------------------------+'
+        '|   <[-u|--update]>  |  check for updates                                                                   |'
+        '+--------------------+--------------------------------------------------------------------------------------+'
+      )
+
+      local -a usage=(
+          '+-----------------------------------------------------------------------------------------------------------+'
+          '|    The arguments passed to the script are being verified, please supply valid domain names and options    |'
+          "|                           Usage: [ $SELF <flag/option> <domain.tld/url> ]                                 |"
+          '\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\'
+      )
+
+      printf "${form[flags]}" "${flags[@]}"
+      printf "${form[description]}" "${description[@]}"
+      printf "${form[disclaimer]}" "${usage[@]}"
+}
+
+function dtr_print_version() {
+    local form="\n    ${COLOR[O221]}$SELF => may look clumsy inside, but it's useful\n"
+          form+="    Version [ ${COLOR[C116]}%s${COLOR[O221]} ]\n\n"
+          form+="${COLOR[RM]}"
+
+    die "${form}" "${VERSION}"
+}
+
+function Error() {
+    local opt=${1}; shift
+    local -a additional_info=( ${@:-} )
+    local -a message
+    local error_type
+
+    case ${opt} in
+        no_option_selected)
+            error_type='Error'
+            message+=( "No valid options were specified" )
+            message+=( "${ARGV[@]:-NULL}" )
+        ;;
+        no_valid_domains)
+            error_type='Error'
+            message+=( "No valid domain names were supplied" )
+            message+=( "${ARGV[@]:-NULL}" )
+        ;;
+        not_registered)
+            error_type='Warning'
+            message+=( "Domain name is not registered" )
+            message+=( "${additional_info[0]}" )
+        ;;
+        empty_dig_reponse)
+            error_type='Warning'
+            message+=( "Root DNS servers returned no nameservers for" )
+            message+=( "${additional_info[0]}" )
+        ;;
+        timeout_when_connecting_to_toolkit)
+            error_type='Error'
+            message+=( "cURL timed-out due to web server ignoring connections from your current IP" )
+            message+=( "Please make sure that you are connected to corporate VPN" )
+        ;;
+        incorrect_toolkit_details)
+            error_type='Error'
+            message+=( "The script failed to login with provided details for 4 times" )
+            message+=( "Please re-set the details by running < dtr -l|--login-details >" )
+        ;;
+        not_hosted_on_shared)
+            error_type='Warning'
+            message+=( "The domain name is not hosted on shared servers" )
+            message+=( "${additional_info[0]}" )
+        ;;
+        uses_cloudflare)
+            error_type='Notice'
+            message+=( "[ ${additional_info[0]} ] is using CF, try running" )
+            message+=( "dtr -d ${additional_info[0]}" )
+    esac
+
+    local form="\n  ${COLOR[R196]}${error_type}: %s "
+          form+="=> ${COLOR[O202]}[ %s ]${COLOR[RM]}\n\n"
+
+    printf "${form}" "${message[0]}" "${message[1]}"
+}
+
+function VALIDATE_DOMAINS() {
+    [[ ${#DOMAINS[@]} == 0 ]] && {
+        Error no_valid_domains ${ARGV[@]}
+        #dtr_print_usage
+        exit 1
+    }
+}
+function GET_DOMAINS_FROM_CLI() {
+    local -a script_args=( ${@} )
+    for each in ${script_args[@]}
+    do
+        [[ ${each} =~ ${REGEX[domain]} ]] && {
+            DOMAINS+=( ${BASH_REMATCH[2]} )
+        }
+    done
+    unset each
+    VALIDATE_DOMAINS
+}
+############################################################################################
+
+#####################################[ Domain trace ]#############################################
+function dtr_whois_info_exists() {
+    local domain=${1}
+    local failure='[Nn]o ([Dd]ata [Ff]ound|match for|whois server)|^$'
+    local response="$(whois ${domain})"
+
+    [[ ${response} =~ ${failure} ]] && {
+        printf "%s" "0"
+    } || {
+        printf "%s" "1"
+    }
+}
+
+function dtr_trace() {
+    local domain=${1}
+    local tld=${domain##*.}
+
+    local -A sed_form=(
+        [RM_lines]='/^([;.]|'"${tld}"'|$)|RRSIG|NSEC|DNSKEY/d'
+        [RM_classes]='s/IN\s+//g'
+        [substitute_spaces]='s/\s+/SPACE/g'
+    )
+
+    local response="$(
+        dig +trace +nodnssec +noauthority +tries=2 +time=1 \
+        -q ${domain} -t any \
+        | sed -re ${sed_form[RM_lines]} \
+        -e ${sed_form[RM_classes]} \
+        -e ${sed_form[substitute_spaces]}
+    )"
+
+    [[ ${response} == "" ]] && {
+        printf "%s" "0"
+        return
+    }
+
+    printf "%s" "${response}"
+}
+
+function dtr_ptr() {
+    local domain=${1}; shift
+    local -a output=( ${@} )
+    local form="  Reverse DNS query for [ %s ] resulted in [ %s ]  "
+    local ptr_record=""
+    local ip=""
+
+    ip=$(grep -Po '\d+[.]\d+[.]\d+[.]\d+' <<< "${output[@]}" | head -1)
+
+    [[ ${ip} != "" ]] && {
+        ptr_record=$(dig +short -x ${ip} | head -1)
+    }
+
+    printf "${form// /SPACE}" "${ip:-NO A Record}" "${ptr_record:-NO PTR Record}"
+}
+
+function dtr_copy() {
+    local char="${1}"; shift
+    local num="${1}"
+    local padding="${2:-}"
+
+    [[ ${padding} != "" ]] && {
+        padding=$(( ${padding} * 2 ))
+        num=$(( ${num} + ${padding} ))
+    }
+
+    for (( i=0; i<${num}; i++ ))
+    do
+        printf "%s" "${char}"
+    done
+}
+
+function dtr_trace_init() {
+    clear
+    GET_DOMAINS_FROM_CLI ${ARGV[@]}
+    _DOMAINS=( ${DOMAINS[@]} )
+
+    local verbose_message="\n  ${COLOR[O202]}Tracing the delegation path for: ${COLOR[R196]}"
+          verbose_message+="<<<< ${COLOR[Y228]}%s${COLOR[R196]} >>>> ${COLOR[RM]}\n\n"
+
+    local -A output_format=(
+        [norm]=" ${COLOR[O202]}%s\n "
+        [norm]+="|${COLOR[C122]}%s${COLOR[O202]}|"
+        [norm]+="${COLOR[RM]}\n"
+        [close]=" ${COLOR[O202]}%s${COLOR[RM]}\n"
+    )
+
+    for (( i=0; i<${#DOMAINS[@]}; i++ ))
+    do
+        unset _DOMAINS[$i]
+
+        local each=${DOMAINS[$i]}
+        local -a output=()
+        local -a bordered_lines=()
+        local response ptr last_line_num penultimate_line_num
+
+        printf "${verbose_message}" "${each}"
+
+        response=$(dtr_whois_info_exists ${each})
+        [[ ${response} == "0" ]] && {
+            Error not_registered ${each}
+            continue
+        }
+
+        response="$(dtr_trace ${each})"
+        [[ ${response} == "0" ]] && {
+            Error empty_dig_reponse ${each}
+            continue
+        }
+
+        for each_line in ${response}
+        do
+            output+=( "  ${each_line}  " )
+        done
+        unset each_line
+
+        ptr=$(dtr_ptr "${each}" "${output[@]}")
+
+        output+=( "${ptr}" )
+
+        last_line_num=${#output[@]}
+        penultimate_line_num=$(( ${last_line_num} - 1 ))
+
+        for (( y=0; y<=${#output[@]}; y++ ))
+        do
+            local prev_number=$(( ${y} - 1 ))
+            local line="${output[$y]//SPACE/ }"
+            local form
+
+            # If the line is empty, get the previous line
+            [[ ${line} == "" ]] && {
+                line="${output[$prev_number]//SPACE/ }"
+            }
+
+            local bordered_line="+$(dtr_copy '-' ${#line})+"
+                  bordered_lines[${y}]="${bordered_line}"
+
+            [[ ${#bordered_line} -lt ${#bordered_lines[$prev_number]} ]] && {
+                bordered_line="${bordered_lines[$prev_number]}"
+            }
+
+            [[ ${y} -le ${penultimate_line_num} ]] && {
+                form="${output_format[norm]}"
+            }
+
+            [[ ${y} == ${last_line_num} ]] && {
+                form="${output_format[close]}"
+                unset line
+            }
+                            
+            printf "${form}" "${bordered_line}" "${line:-}"
+        done
+        unset each_line
+
+        [[ ${ptr//SPACE/ } =~ ${REGEX[shared_server]} ]] && {
+            local host="${BASH_REMATCH[1]}${BASH_REMATCH[2]}${BASH_REMATCH[4]}"
+            dtr_remote_info_init ${each} ${host} tracing
+        }
+
+        [[ ${output} =~ ANY.*?obsoleted ]] && {
+            Error uses_cloudflare ${each}
+        }
+
+    done
+    unset each
+}
+#####################################[ Toolkit ]#############################################
+function dtr_toolkit_login() {
+    local cookie_jar="${TOOLKIT[jar]}"
+    local callback_function="${1}"
+
+    curl -s -c "${cookie_jar}" --url "${TOOLKIT[url]}/accounts/login" &>/dev/null
+
+    local csrf_token="$(grep -Po '(?<=csrftoken\s)\w+$' ${cookie_jar})"
+    local post_data="csrfmiddlewaretoken=${csrf_token}&username=${user}&password=${pass}&next="
+
+    curl -sL -c ${cookie_jar} -b ${cookie_jar} \
+         --header "Referer: ${TOOLKIT[url]}/accounts/login" \
+         --url "${TOOLKIT[url]}/accounts/login" \
+         --data "${post_data}" &>/dev/null
+
+    eval "${callback_function}"
+}
+
+function dtr_toolkit_find_domain() {
+    local domain=${1}
+
+    [[ ${TOOLKIT[timeout]} -gt "3" ]] && {
+        printf "%s" "timeout"
+        return
+    }
+
+    local url="${TOOLKIT[url]}/shared/find_domain/${domain}"
+    local cookie_jar=${TOOLKIT[jar]}
+    local response="$( curl '--connect-timeout' 10 -sL -b "${cookie_jar}" --header "${url+Referer: ${url%/*}}" --url "${url}" )"
+
+    [[ ${response} == "" ]] && {
+        printf "%s" "Ignored"
+        return
+    }
+
+    [[ ${response} =~ Please.*?login ]] && {
+        let "TOOLKIT[timeout]++"
+        dtr_toolkit_login "dtr_toolkit_find_domain ${domain}"
+        return
+    }
+
+    [[ ${response} =~ Domain.*?was.*?not.*?found ]] && return
+
+    local Command='while ( m{'
+          Command+='((?:server|business|premium|host)(?:\d{1,3}[.])'
+          Command+='(?:web-hosting|registrar-servers)(?:[.]com))(?=[:]\s\d)'
+          Command+='}g )'
+          Command+='{ print "$1\n"; }'
+
+    local -a results=( $(perl -ne "${Command}" <<< "${response}") )
+
+    printf "%s\n" "${results[@]}"
+}
+
+function dtr_toolkit_save_login_info() {
+    clear
+    [[ ! -d ${TOOLKIT[dir]} ]] && {
+        mkdir -m 755 ${TOOLKIT[dir]}
+    }
+    local filename="${TOOLKIT[creds]}"
+    local -A form=(
+        [prompt]="\n  ${COLOR[O202]}Please enter your "
+        [prompt]+="[ ${COLOR[B39]}%s${COLOR[O202]} ]:${COLOR[RM]} "
+        [fail]="\n  ${COLOR[R196]}This does not look like a valid %s: "
+        [fail]+="[ ${COLOR[B39]}%s${COLOR[R196]} ]\n"
+        [fail]+="${COLOR[O202]}  Would you try entering it again?:${COLOR[RM]} "
+        [success]="\n\n  ${COLOR[G119]}Thank you! The credentials have been successfully"
+        [success]+="  saved in [ ${COLOR[O202]}%s${COLOR[G119]} ]\n"
+        [success]+="  and encoded with base64 for the future use${COLOR[RM]}\n\n"
+    )
+
+    local user pass
+
+    printf "${form[prompt]}" "Toolkit username"
+    while read -r user
+    do
+        [[ ${user} =~ ^[[:alnum:]@.-]{4,}$ ]] && {
+            break
+        }
+        printf "${form[fail]}" "Toolkit username" "${user}"
+    done
+
+    printf "${form[prompt]}" "Toolkit password (Your input is not printed)"
+    while read -rs pass
+    do
+        [[ ${pass} =~ ^[[:graph:]]+$ ]] && {
+            break
+        }
+        printf "${form[fail]}" "Toolkit password" "${pass}"
+    done
+
+    local -A encoded=(
+        [user]="$(base64 <<< "${user}")"
+        [pass]="$(base64 <<< "${pass}")"
+    )
+
+    printf "%s:%s\n" "${encoded[user]}" "${encoded[pass]}" > "${filename}"
+    TOOLKIT[details]="1"
+    chmod 600 "${filename}"
+    printf "${form[success]}" "${filename}"
+}
+
+function dtr_toolkit_get_login_info() {
+    local filename=${TOOLKIT[creds]}
+    local pattern='^([[:alnum:]+/=]+)[:]([[:alnum:]+/=]+)$'
+
+    [[ ${TOOLKIT[details]} == "1" ]] && {
+        [[ $( grep -Po ${pattern} ${filename} ) =~ ${pattern} ]] && {
+            TOOLKIT[user]="$( base64 -d <<<${BASH_REMATCH[1]} )"
+            TOOLKIT[pass]="$( base64 -d <<<${BASH_REMATCH[2]} )"
+        }
+        return
+    }
+
+    [[ -f ${filename} && $( grep -Po ${pattern} ${filename} ) =~ ${pattern} ]] && {
+        TOOLKIT[user]="$( base64 -d <<<${BASH_REMATCH[1]} )"
+        TOOLKIT[pass]="$( base64 -d <<<${BASH_REMATCH[2]} )"
+        TOOLKIT[details]="1"
+        return
+    }
+}
+
+function dtr_toolkit_init() {
+    dtr_toolkit_get_login_info
+    [[ ${TOOLKIT[details]} == "0" ]] && {
+        dtr_toolkit_save_login_info
+    }
+}
+#####################################[ SSH remote info ]#############################################
+function dtr_remote_info() {
+    local domain=${1}
+    local host=${2}
+
+    [[ ${host} =~ ^host[0-9]{1,3}$ ]] && host=${host}.registrar-servers.com
+
+    local Command="cpUSER=\$(sudo /scripts/whoowns ${domain}); "
+          Command+="[[ \${?} == 1 ]] && { printf \"no_user\n\"; exit 0 ;}; "
+          Command+="sudo grep -Po '^(DNS\d*|SUSPENDED|SUSPENDTIME|OWNER|IP|PLAN|USER)=\S+' /var/cpanel/users/\${cpUSER}; "
+          Command+="cpBACKUP=\"\$(sudo /bin/ls -lah /backup/cpbackup/daily/\${cpUSER}/ && echo 1 || echo 0)\"; "
+          Command+="[[ \${cpBACKUP} != 0 ]] && { perl -ne '"
+          Command+="my \$date = (m{\s([A-Z][a-z]{2})\s(\d{2})\s(\d{2}:\d{2})\s[.]}g) ? \"BACKUP_DATE=\$1_\$2_\$3\n\" : \"fail\"; "
+          Command+="print \$date;' <<<\${cpBACKUP} ;} || { printf \"no_backup\n\" ;}"
+
+    local Clear='s{bash[:]\s[/]var.+?denied|[/]bin[/]ls.+?directory|\r}{}g'
+    local -a results=( $(ssh -q wh@${host} -p 12789 -t ${Command} | perl -pe ${Clear}) )
+
+    printf "%s\n" "${results[@]}"
+}
+
+function dtr_remote_info_sort_domains() {
+    local main_domain="${cPanelData[MND]}"
+    local Command='my @arr = split /DELIM /, $ARGV[0]; foreach (@arr){ print "$_\n" ;}'
+    local -a domains=( $(perl -e "${Command}" "${1}") )
+
+    local -a addon_subs=()
+    local -a addons=()
+    local -a subs=()
+
+    cPanelData[AddonDomainsNum]="0"
+    cPanelData[SubDomainsNum]="0"
+
+    local -A patterns=(
+        [addon_sub]="^[[:alnum:]_-]{1,63}[.]([[:alpha:]]{2,3}[.])?${main_domain//./[.]}$"
+        [sub]='^[[:alnum:]_-]{1,63}[.][[:alnum:]_-]{1,63}[.][[:alpha:]]{2,16}([.][[:alpha:]]{2,3})?$'
+        [addon]='^[[:alnum:]_-]{1,63}[.]([[:alpha:]]{2,3}([.][[:alpha:]]{2,3})?|[[:alpha:]]{2,16})$'
+    )
+
+    for each in ${domains[@]}
+    do
+        [[ ${each} =~ ${patterns[addon_sub]} ]] && {
+            addon_subs+=( ${each} )
+            continue
+        }
+        [[ ${each} =~ ${patterns[addon]} ]] && {
+            addons+=( ${each} )
+            continue
+        }
+        [[ ${each} =~ ${patterns[sub]} ]] && {
+            subs+=( ${each} )
+            continue
+        }
+    done
+    unset each
+
+    for each in ${addons[@]}
+    do
+        local check
+        local each_cut=${each%%.*}
+        local offset=$(( (${#each_cut} / 2) + 1 ))
+        
+        check=$(grep -Pq "${each_cut:0:$offset}[\w-]*[.]${main_domain//./[.]}" <<< "${addon_subs[@]}" && echo 1 || echo 0)        
+        [[ ${check} == "1" ]] && {
+            cPanelData[AddonDomains]+="${each} "
+            let "cPanelData[AddonDomainsNum]++"
+            continue
+        }
+
+    done
+    unset each
+
+    for each in ${subs[@]}
+    do
+        local check
+        local each_cut=${each%%.*}
+        local offset=$(( (${#each_cut} / 2) + 1 ))
+
+        check=$(grep -Pq "${each_cut:0:$offset}[\w-]*[.][\w-]{1,63}[.]([\w]{2,3}([.][\w]{2,3})?|[\w-]{2,16})" <<< "${addon_sub[@]}" && echo 1 || echo 0)
+        [[ ${check} == "1" ]] && {
+            cPanelData[AddonDomains]+="${each} "
+            let "cPanelData[AddonDomainsNum]++"
+            continue
+        }
+        [[ ${check} == "0" ]] && {
+            cPanelData[SubDomains]+="${each} "
+            let "cPanelData[SubDomainsNum]++"
+            continue
+        }
+    done
+    unset each
+
+
+    for each in ${addon_subs[@]}
+    do
+        local check
+        local each_cut=${each%%.*}
+    #    local offset=$(( (${#each_cut} / 2) + 1 ))
+
+        check=$(grep -Pq "${each_cut}[.]([\w]{2,3}([.][\w]{2,3})?|[\w-]{2,16})" <<< "${addons[@]}" && echo 1 || echo 0)
+        [[ ${check} == "0" ]] && {
+            cPanelData[SubDomains]+="${each} "
+            let "cPanelData[SubDomainsNum]++"
+            continue
+        }
+
+    done
+    unset each
+}
+
+
+function dtr_remote_info_parse() {
+    local domain=${1}
+    local host=${2}
+    local -a cpanel_info=( $(dtr_remote_info ${domain} ${host}) )
+    local form="${COLOR[O202]}Addons [ Total: ${COLOR[G35]}%d${COLOR[O202]} ]\n${COLOR[C122]}%s\n"
+          form+="${COLOR[O202]}Subs [ Total: ${COLOR[G35]}%d${COLOR[O202]} ]\n${COLOR[Y228]}%s\n"
+          form+="${COLOR[RM]}"
+
+    typeset -A cPanelData=()
+
+    for each in ${cpanel_info[@]}
+    do
+        [[ ${each} == "" ]] && continue
+
+        [[ ${each} =~ ^DNS=(.+)$ ]] && {
+            cPanelData[MND]="${BASH_REMATCH[1]}"
+            continue
+        }
+
+        [[ ${each} =~ ^DNS[0-9]+=(.+)$ ]] && {
+            cPanelData[Domains]+=" DELIM ${BASH_REMATCH[1]}"
+        }
+
+        [[ ${each} =~ ^IP=(.+)$ ]] && {
+            cPanelData[IP]="${BASH_REMATCH[1]}"    
+            continue
+        }
+
+        [[ ${each} =~ ^PLAN=(.+)$ ]] && {
+            cPanelData[Plan]="${BASH_REMATCH[1]}"
+            continue
+        }
+
+        [[ ${each} =~ ^OWNER=(.+)$ ]] && {
+            cPanelData[Owner]="${BASH_REMATCH[1]}"
+        }
+
+        [[ ${each} =~ ^BACKUP_DATE=([A-Z][a-z]{2})_([0-9]{2})_([0-9]{2}:[0-9]{2})$ ]] && {
+            cPanelData[Backup]="${BASH_REMATCH[1]} ${BASH_REMATCH[2]} ${BASH_REMATCH[3]} EDT"
+            continue
+        }
+
+        [[ ${each} =~ ^no_backup$ ]] && {
+            cPanelData[Backup]="Not available"
+            continue
+        }
+
+        [[ ${each} =~ ^USER=(.+)$ ]] && {
+            cPanelData[User]="${BASH_REMATCH[1]}"
+            continue
+        }
+
+        [[  ${each} =~ ^SUSPENDED=1$ ]] && {
+            local is_suspended="1"
+            continue
+        }
+
+        [[ ${each} =~ ^SUSPENDTIME=([0-9]+)$ ]] && {
+            local suspension_date="$(date -d @${BASH_REMATCH[1]} +%a\ %b\ %d\ %T\ %Y)"
+            continue
+        }
+    done
+    unset each
+
+    [[ ${is_suspended} == "1" && ${suspension_date} != "" ]] && {
+        cPanelData[Status]="Suspended on ${suspension_date}"
+    }
+
+    [[ ${cPanelData[Owner]} =~ ^wh|root$ ]] && unset cPanelData[Owner]
+
+    clear
+    dtr_remote_info_sort_domains "${cPanelData[Domains]}"
+    dtr_remote_info_tablelicious_wrapper
+
+    local addnum=${cPanelData[AddonDomainsNum]}
+    local subnum=${cPanelData[SubDomainsNum]}
+
+    printf "${form}" "${addnum}" "${cPanelData[AddonDomains]% }" "${subnum}" "${cPanelData[SubDomains]% }"
+}
+
+function dtr_remote_info_tablelicious_wrapper() {
+    local skipperino='Domains|AddonDomains|SubDomains'
+    local line="+"
+
+    local -A contents=(
+        [header]="|"
+        [body]="|"
+    )
+
+    for key in ${!cPanelData[@]}
+    do
+        [[ ${key} =~ ${skipperino} ]] && continue
+
+        local val="${cPanelData[$key]}"
+        local hyphens=$(dtr_copy '-' "${#val}" '1')
+        local max=${#hyphens}
+        local min=${#key}
+        local dif=$(( ${max} - ${min} ))
+        local padl=$(( (${dif} / 2) + (${dif} % 2) ))
+        local padr=$(( ${dif} / 2 ))
+
+        line+="${hyphens}+"
+        contents[header]+="$(printf "%${padl}s%${min}s%${padr}s" '' ${key} '')|"
+        contents[body]+="$(printf "%1s%${#val}s%1s" '' "${val}" '')|"
+    done
+
+    printf "${line}\n%s\n${line}\n%s\n${line}\n" "${contents[header]}" "${contents[body]}"
+}
+
+function dtr_remote_info_init() {
+    local domain=${1}
+    local host=${2}
+    local action=${3}
+
+    local -A form=(
+        [begin]="\n  ${COLOR[Y228]}[ %s ]${COLOR[O202]} "
+        [begin]+="appears to be pointed to a Shared server ${COLOR[Y228]}[ %s ]\n  "
+        [begin]+="${COLOR[O202]}Login as wh (y/n)?: ${COLOR[RM]}"
+        [incorrect_input]="\n  ${COLOR[R196]}Incorrect input [ ${COLOR[O202]}%s${COLOR[R196]} ]\n  "
+        [incorrect_input]+="Please enter either \"y\" or \"n\": ${COLOR[RM]}"
+        [cont]="\n  ${COLOR[O202]}Continue ${action} domain names [ ${COLOR[Y228]}%s${COLOR[O202]} ]"
+        [cont]+=" (y/n)?: ${COLOR[RM]}"
+    )
+
+    local -A patterns=(
+        [yes]='^[yY][eE]?[sS]?$'
+        [no]='^[nN][oO]?$'
+    )
+
+    local Confirm Continue
+
+    printf "${form[begin]}" "${domain}" "${host}"
+    while read Confirm
+    do
+        if [[ ${Confirm} =~ ${patterns[yes]} ]]
+        then
+            dtr_remote_info_parse ${domain} ${host}
+            ssh -q wh@${host} -p 12789
+
+            local left="${_DOMAINS[*]}"
+
+            [[ ${left} == "" ]] && return
+
+            printf "${form[cont]}" "${left}"
+            while read -r Continue
+            do
+                if [[ ${Continue} =~ ${patterns[yes]} ]]
+                then
+                    return
+                elif [[ ${Continue} =~ ${patterns[no]} ]]
+                then
+                    exit 0
+                else
+                    printf "${form[incorrect_input]}" "${Continue:-NULL}"
+                fi
+            done
+        elif [[ ${Confirm} =~ ${patterns[no]} ]]
+        then
+            return
+        else
+            printf "${form[incorrect_input]}" "${Confirm:-NULL}"
+        fi
+    done
+    
+}
+#####################################[ dtr_doit_init ]#############################################
+function dtr_doit_get_hostnames_from_dns() {
+    local query="${1}"
+    local response="$( eval "${query}" )"
+
+    [[ -z ${response} ]] && return
+
+    local -a host=()
+    local -A patterns=(
+        [A]='(?<=A\s)\d{1,3}[.]\d{1,3}[.]\d{1,3}[.]\d{1,3}'
+        [MX]='MX\s*\d\s\K[\w.-]+'
+        [NS]='(?<=NS\s)[\w.-]+'
+    )
+    local -A dns_records=(
+        [A]=$( grep -Po ${patterns[A]} <<<${response} | head -1 )
+        [MX_A]=$( dig +short -q $( grep -Po ${patterns[MX]} <<<${response} | head -1 ) -t A | head -1)
+        [NS]=$( grep -Po ${patterns[NS]} <<<${response} | head -1 )
+    )
+    local -A ptr_records=()
+
+    [[ ${dns_records[A]} != "" ]] && {
+        ptr_records[A]=$( dig +short -x ${dns_records[A]} )
+    }
+    [[ ${dns_records[MX_A]} != "" ]] && {
+        ptr_records[MX]=$( dig +short -x ${dns_records[MX_A]} )
+    }
+
+    for key in ${!ptr_records[@]}
+    do
+        local val=${ptr_records[$key]}
+        [[ ${val} =~ ${REGEX[shared_server]} ]] && {
+            host=( "${BASH_REMATCH[1]}${BASH_REMATCH[2]}${BASH_REMATCH[4]}" )
+            break
+        }
+    done
+    unset key
+
+    printf "%s\n" "${host[@]}"
+}
+
+
+function dtr_doit_hostname() {
+    local domain="${1}"
+    local _timeout='timeout'
+    local -A queries=(
+        [new]="dig +noall +answer -q ${domain} -t A -q ${domain} -t MX -q ${domain} -t NS"
+        [on_server]="dig @ns101.namecheaphosting.com +noall +answer -q ${domain} -t A"
+    )
+
+    host=( $(dtr_doit_get_hostnames_from_dns "${queries[new]}") )
+    
+    [[ ${host[0]} == "" ]] && {
+        host=( $(dtr_doit_get_hostnames_from_dns "${queries[on_server]}") )
+    
+        [[ ${host[0]} == "" ]] && {
+            host=( $(dtr_toolkit_find_domain ${domain}) )
+    
+            [[ ${host[0]} =~ ${_timeout} ]] && {
+                printf "%s" "timeout"
+                return
+            }
+
+            [[ ${host[0]} =~ Ignored ]] && {
+                printf "%s" "Ignored"
+                return
+            }
+
+            [[ ${host[0]} == "" ]] && {
+                printf "%s" "NotHosted"
+                return
+            }
+        }
+    }
+    printf "%s\n" "${host[@]}"
+}
+
+function dtr_doit_check_domain() {
+    local domain=${1}
+    local host=${2}
+
+    local failure='^$|SORRY|defaultwebpage[.]cgi|suspended'
+    local ip_on_host=$( dig @${host} +short -q ${domain} -t A )
+    local status='okay'
+    local response="$( curl -sLk --resolve ${domain}:80:${ip_on_host} http://${domain}/ )"
+    [[ ${response} =~ ${failure} ]] && {
+        status='failed'
+    }
+    printf "%s" "${status}"
+}
+
+function dtr_doit_init() {
+
+    GET_DOMAINS_FROM_CLI ${ARGV[@]}
+    _DOMAINS=( ${DOMAINS[@]} )
+
+    for (( i=0; i<${#DOMAINS[@]}; i++ ))
+    do
+        unset _DOMAINS[$i]
+        local each=${DOMAINS[$i]}
+        local -a hosts=( $(dtr_doit_hostname ${each}) )
+
+        [[ ${hosts[*]} =~ timeout ]] && {
+            Error incorrect_toolkit_details ${TOOLKIT[creds]}
+            exit 0
+        }
+
+        [[ ${hosts[*]} =~ Ignored ]] && {
+            Error timeout_when_connecting_to_toolkit
+            continue
+        }
+
+        [[ ${#hosts[@]} == "0" || ${hosts[*]} =~ NotHosted ]] && {
+            Error not_hosted_on_shared ${each}
+            continue
+        }
+
+        [[ ${#hosts[@]} -gt "1" ]] && {
+            for host in ${hosts[@]}
+            do
+                local response=$(dtr_doit_check_domain ${domain} ${host})
+                [[ ${response} == "failed" ]] && {
+                    continue
+                }
+                local servername="${host}"
+                break
+            done
+        }
+
+        local servername="${hosts[0]}"
+        
+        dtr_remote_info_init ${each} ${servername} tracking
+    done
+}
+
+
+function _dtr_update() {
+    local filename="${1}"
+    local Command="sleep 2 && cat ${filename} > ${SELF} && shred -u ${filename}"
+    eval ${Command} & disown
+    exit 0
+}
+
+function dtr_update() {
+    local -A param=(
+        [src_url]='https://raw.githubusercontent.com/PlasticVader/my_cli_tools/master/updates/dtr'
+        [tempfile]="$DIR/${SELF}_$( date +%N )"
+    )
+    local -A form=(
+        [checking]="\n  ${COLOR[O221]}Checking the latest version${COLOR[RM]}\n"
+        [left]="\n  ${COLOR[O221]}The script was left as it is [ %s ]${COLOR[RM]}\n"
+        [update]="\n  ${COLOR[G35]}New version [${COLOR[B39]} %s ${COLOR[G35]}] of the script is available, "
+        [update]+="current [${COLOR[O221]} %s ${COLOR[G35]}], update now (y/n)?:${COLOR[RM]}"
+        [no_need]="\n  ${COLOR[C122]}The script is up to date [ ${COLOR[O221]}${VERSION}${COLOR[C122]} ] "
+        [no_need]+="no need to update it right now${COLOR[RM]}\n\n"
+        [invalid_input]="\n  ${COLOR[R196]}Incorrect input [ ${COLOR[O202]}%s${COLOR[R196]} ]\n  "
+        [invalid_input]+="Please enter either \"y\" or \"n\": ${COLOR[RM]}"
+    )
+    printf "${form[checking]}"
+    curl -sL --url ${param[src_url]} -o "${param[tempfile]}"
+    local remote_version="$( grep -Po '\d[.]\d[.]\d' "${param[tempfile]}" )"
+    local Confirm
+    [[ ${remote_version//.} -gt ${VERSION//.} ]] && {
+        printf "${form[update]}" "${remote_version}" "${VERSION}"
+        while read -r Confirm
+        do
+            if [[ $Confirm =~ [Yy][Ee]?[Ss]? ]]
+            then
+                _dtr_update "${param[tempfile]}"
+                break
+            elif [[ $Confirm =~ [Nn][Oo]? ]]
+            then
+                printf "${form[left]}" "${VERSION}"
+                shred -u ${param[tempfile]}
+                return
+            else
+                printf "${form[invalid_input]}" "${Confirm:-NULL}"
+            fi
+        done
+    }
+    shred -u ${param[tempfile]}
+    die "${form[no_need]}"
+}
+
+
+function dtr_get_dns_zone_from_server() {
+    local domain="${1}"; shift
+    local server="${1}"
+
+    [[ -z $domain || -z $server ]] && {
+        die "\n  Invalid arguments supplied  \n"
+    }
+
+    local -A records=(
+        ['A']="${domain} cpanel.${domain} webdisk.${domain} webmail.${domain} mail.${domain} cpcalendars.${domain} cpcontacts.${domain} autodiscover.${domain} autoconfig.${domain}"
+        ['MX']="${domain}"
+        ['CNAME']="www.${domain} mail.${domain} ftp.${domain}"
+        ['TXT']="_caldav._tcp.${domain} _caldavs._tcp.${domain} _carddav._tcp.${domain} _carddavs._tcp.${domain} default._domainkey.${domain}"
+        ['SRV']="_autodiscover._tcp.${domain} _caldav._tcp.${domain} _caldavs._tcp.${domain} _carddav._tcp.${domain} _carddavs._tcp.${domain}"
+    )
+
+    local res
+    printf "$domain => $server\n"
+    for key in ${!records[@]}
+    do
+        printf "###[ $key ]###\n"
+        for dom in ${records[$key]}
+        do
+            res="$( dig @${server} +noall +answer -q ${dom} -t $key )"
+            [[ -z $res ]] && continue
+            printf "%s\n" "$res"
+        done
+        unset dom
+    done
+    unset key
+
+}
+
+function dtr_dns_zone_init() {
+    local domain="${1}"
+    local -a host
+    [[ -z $domain ]] && {
+        die "No domain name \n"
+    }
+    [[ -n ${2} ]] && {
+        [[ ${2} =~ ^(server|business|premium)[0-9] ]] && host=( ${2}.web-hosting.com )
+        [[ ${2} =~ ^host[0-9] ]] && host=( ${2}.registrar-servers.com )
+    }
+    [[ -z ${host[0]} ]] && host=( $(dtr_doit_hostname $domain) )
+    [[ ${#host} == "0" ]] && {
+        Error not_hosted_on_shared $domain
+        return
+    }
+    for each in ${host[@]}
+    do
+        dtr_get_dns_zone_from_server $domain $each
+    done
+    unset each
+}
+
+
+case ${OPTION} in
+    -t|--trace)
+        dtr_trace_init
+        ;;
+    -d|-do|--doit)
+        dtr_toolkit_init
+        dtr_doit_init
+        ;;
+    -l|--login-details)
+        dtr_toolkit_save_login_info
+        ;;
+    -z|--dns-zone)
+        dtr_dns_zone_init ${1} ${2}
+        ;;
+    -u|--update)
+        dtr_update
+        ;;
+    -h|--help)
+        dtr_print_usage
+        ;;
+    -v|--version)
+        dtr_print_version
+        ;;
+    *)
+        Error no_option_selected
+        dtr_print_usage
+        ;;
+esac
