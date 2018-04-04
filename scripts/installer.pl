@@ -71,6 +71,7 @@ if (not $bin_in_path and -f $bashrc) {
     print qq{Sourced: [$bashrc]};
 }
 
+clear;
 print qq{Getting the available scripts from [$base/available]\n};
 my $res = HTTP::Tiny->new->get(qq{$base/available});
 my @available = split / /, $res->{content};
@@ -82,7 +83,6 @@ else {
     die qq{Fetch failed!\n};
 }
 
-clear;
 INST_BEGIN:
 do {
     $buff  = qq{Please input on of the commands in parens (cmd)\n};
