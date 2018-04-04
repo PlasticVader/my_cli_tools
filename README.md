@@ -63,7 +63,7 @@ To install with the "interactive" installer, run
 
 ## Disclaimer of warranty
 
-**This is a free software and there is no warranty for it to the extent permitted by applicable law.
+**This is a free software and there is no warranty for it to the extent permitted by applicable law.**
 The user has four essential freedoms when using this software:
 1. The freedom to run the program as you wish, for any purpose (freedom
 0).
@@ -71,4 +71,4 @@ The user has four essential freedoms when using this software:
 code is a precondition for this.
 1. The freedom to redistribute copies so you can help your neighbor (freedom 2).
 1. The freedom to distribute copies of your modified versions to others (freedom 3). By doing this you can give the whole community a
-chance to benefit from your changes. Access to the source code is a precondition for this.**
+chance to benefit from your changes. Access to the source code is a precondition for this.
